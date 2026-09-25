@@ -1,0 +1,46 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isUser(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    function isGroupMember(groupId) {
+      return isAuthenticated() &&
+        request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
+    }
+
+    // users/{uid}
+    match /users/{uid} {
+      allow read, write: if isUser(uid);
+    }
+
+    // groups/{groupId}
+    match /groups/{groupId} {
+      allow create: if isAuthenticated();
+      allow read, update: if isAuthenticated() && request.auth.uid in resource.data.memberIds;
+      allow delete: if isAuthenticated() && resource.data.createdBy == request.auth.uid;
+
+      // Events subcollection
+      match /events/{eventId} {
+        allow read, write: if isGroupMember(groupId);
+      }
+
+      // Tasks subcollection
+      match /tasks/{taskId} {
+        allow read, write: if isGroupMember(groupId);
+      }
+    }
+
+    // Top-level events fallback
+    match /events/{eventId} {
+      allow read, write: if isAuthenticated() &&
+        request.auth.uid in get(/databases/$(database)/documents/groups/$(resource.data.groupId)).data.memberIds;
+    }
+  }
+}

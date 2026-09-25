@@ -1,0 +1,21 @@
+<resources>
+    <string name="app_name">StudyPartner Planner</string>
+    <string name="default_web_client_id">1049276433931-2dc90chq25jpsuiki43dvrcvucef5idv.apps.googleusercontent.com</string>
+
+    <string name="nav_calendar">Calendar</string>
+    <string name="nav_tasks">Tasks</string>
+    <string name="nav_settings">Settings</string>
+
+    <string name="label_new">New</string>
+
+    <string name="placeholder_login">Login</string>
+    <string name="placeholder_group_setup">Group setup</string>
+    <string name="placeholder_calendar">Calendar</string>
+    <string name="placeholder_tasks">Tasks</string>
+    <string name="placeholder_settings">Settings</string>
+    <string name="placeholder_event_detail">Event detail: %1$s</string>
+    <string name="placeholder_event_editor">Event editor: %1$s</string>
+    <string name="placeholder_task_detail">Task detail: %1$s</string>
+    <string name="placeholder_task_editor">Task editor: %1$s</string>
+    <string name="placeholder_join_group">Join group: %1$s</string>
+</resources>
