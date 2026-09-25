@@ -15,6 +15,19 @@ service cloud.firestore {
         request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
     }
 
+    function isValidGroupCreate(groupId) {
+      let data = request.resource.data;
+      let requiredFields = ['groupId', 'name', 'memberIds', 'inviteCode', 'createdBy', 'createdAt'];
+      return isAuthenticated() &&
+        data.keys().hasOnly(requiredFields) &&
+        data.keys().hasAll(requiredFields) &&
+        data.groupId == groupId &&
+        data.name is string && data.name.size() > 0 &&
+        data.inviteCode is string && data.inviteCode.size() == 6 &&
+        data.createdBy == request.auth.uid &&
+        data.memberIds == [request.auth.uid];
+    }
+
     // users/{uid}
     match /users/{uid} {
       allow read, write: if isUser(uid);
@@ -22,7 +35,7 @@ service cloud.firestore {
 
     // groups/{groupId}
     match /groups/{groupId} {
-      allow create: if isAuthenticated();
+      allow create: if isValidGroupCreate(groupId);
       allow read, update: if isAuthenticated() && request.auth.uid in resource.data.memberIds;
       allow delete: if isAuthenticated() && resource.data.createdBy == request.auth.uid;
 
@@ -35,12 +48,6 @@ service cloud.firestore {
       match /tasks/{taskId} {
         allow read, write: if isGroupMember(groupId);
       }
-    }
-
-    // Top-level events fallback
-    match /events/{eventId} {
-      allow read, write: if isAuthenticated() &&
-        request.auth.uid in get(/databases/$(database)/documents/groups/$(resource.data.groupId)).data.memberIds;
     }
   }
 }

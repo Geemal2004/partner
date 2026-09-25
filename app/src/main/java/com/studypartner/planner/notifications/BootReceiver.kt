@@ -8,6 +8,7 @@ import com.studypartner.planner.data.repository.UserPreferencesRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -24,19 +25,42 @@ class BootReceiver : BroadcastReceiver() {
     @Inject
     lateinit var userPreferencesRepository: UserPreferencesRepository
 
+    @Inject
+    lateinit var dailySummaryScheduler: DailySummaryScheduler
+
+    internal var ioDispatcher = Dispatchers.IO
+
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == Intent.ACTION_TIMEZONE_CHANGED) {
-            CoroutineScope(Dispatchers.IO).launch {
-                val prefs = userPreferencesRepository.userPreferencesFlow.first()
-                val now = System.currentTimeMillis()
-                val startOfDay = now // We only need future events
-                val endOfDay = now + 365L * 24 * 60 * 60 * 1000 // Look ahead 1 year
-                
-                val events = eventDao.getEventsForDay(startOfDay, endOfDay)
-                events.forEach { event ->
-                    reminderScheduler.scheduleReminder(event, prefs.defaultReminderOffset)
+            val pendingResult = goAsync()
+            processIntent(intent, pendingResult)
+        }
+    }
+
+    internal fun processIntent(intent: Intent, pendingResult: PendingResult?): Job? {
+        if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == Intent.ACTION_TIMEZONE_CHANGED) {
+            return CoroutineScope(ioDispatcher).launch {
+                try {
+                    val prefs = userPreferencesRepository.userPreferencesFlow.first()
+                    val now = System.currentTimeMillis()
+                    val startOfDay = now // We only need future events
+                    val endOfDay = now + 365L * 24 * 60 * 60 * 1000 // Look ahead 1 year
+
+                    val events = eventDao.getEventsForDay(startOfDay, endOfDay)
+                    events.forEach { event ->
+                        reminderScheduler.scheduleReminder(event, prefs.defaultReminderOffset)
+                    }
+
+                    if (prefs.dailySummaryEnabled) {
+                        dailySummaryScheduler.scheduleDailySummary(prefs.dailySummaryTime)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } finally {
+                    pendingResult?.finish()
                 }
             }
         }
+        return null
     }
 }

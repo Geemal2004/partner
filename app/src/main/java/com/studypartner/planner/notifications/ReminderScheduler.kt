@@ -12,15 +12,17 @@ import javax.inject.Singleton
 
 @Singleton
 class ReminderScheduler @Inject constructor(
-    @ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context
 ) {
+    internal var sdkInt: Int = Build.VERSION.SDK_INT
+
     fun scheduleReminder(event: EventEntity, defaultOffsetMinutes: Int) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (!alarmManager.canScheduleExactAlarms()) {
-                return
-            }
+        val canExact = if (sdkInt >= Build.VERSION_CODES.S) {
+            alarmManager.canScheduleExactAlarms()
+        } else {
+            true
         }
 
         val reminderMinutes = event.reminderMinutes ?: defaultOffsetMinutes
@@ -42,11 +44,19 @@ class ReminderScheduler @Inject constructor(
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        alarmManager.setExactAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
-            reminderTime,
-            pendingIntent
-        )
+        if (canExact) {
+            alarmManager.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                reminderTime,
+                pendingIntent
+            )
+        } else {
+            alarmManager.setAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                reminderTime,
+                pendingIntent
+            )
+        }
     }
 
     fun cancelReminder(eventId: String) {

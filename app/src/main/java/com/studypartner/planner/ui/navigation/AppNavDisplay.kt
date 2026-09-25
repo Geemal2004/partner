@@ -18,10 +18,13 @@ import androidx.navigation3.ui.NavDisplay
 import com.studypartner.planner.R
 import com.studypartner.planner.ui.auth.LoginScreen
 import com.studypartner.planner.ui.calendar.CalendarScreen
+import com.studypartner.planner.ui.calendar.EventDetailScreen
 import com.studypartner.planner.ui.calendar.EventEditorScreen
 import com.studypartner.planner.ui.group.GroupSetupScreen
 import com.studypartner.planner.ui.group.JoinGroupScreen
 import com.studypartner.planner.ui.settings.SettingsScreen
+import com.studypartner.planner.ui.tasks.TaskDetailScreen
+import com.studypartner.planner.ui.tasks.TaskEditorScreen
 import com.studypartner.planner.ui.tasks.TasksScreen
 
 @Composable
@@ -62,8 +65,12 @@ fun AppNavDisplay(
                 SettingsScreen()
             }
             entry<EventDetail> { key ->
-                PlaceholderScreen(
-                    title = stringResource(R.string.placeholder_event_detail, key.id)
+                EventDetailScreen(
+                    eventId = key.id,
+                    onNavigateToEditor = { eventId ->
+                        navigator.navigate(EventEditor(eventId))
+                    },
+                    onNavigateBack = { navigator.goBack() }
                 )
             }
             entry<EventEditor> { key ->
@@ -73,16 +80,18 @@ fun AppNavDisplay(
                 )
             }
             entry<TaskDetail> { key ->
-                PlaceholderScreen(
-                    title = stringResource(R.string.placeholder_task_detail, key.id)
+                TaskDetailScreen(
+                    taskId = key.id,
+                    onNavigateToEditor = { taskId ->
+                        navigator.navigate(TaskEditor(taskId))
+                    },
+                    onNavigateBack = { navigator.goBack() }
                 )
             }
             entry<TaskEditor> { key ->
-                PlaceholderScreen(
-                    title = stringResource(
-                        R.string.placeholder_task_editor,
-                        key.taskId ?: stringResource(R.string.label_new)
-                    )
+                TaskEditorScreen(
+                    taskId = key.taskId,
+                    onNavigateBack = { navigator.goBack() }
                 )
             }
             entry<JoinGroup> { key ->
@@ -93,24 +102,4 @@ fun AppNavDisplay(
             }
         },
     )
-}
-
-@Composable
-internal fun PlaceholderScreen(
-    title: String,
-    modifier: Modifier = Modifier,
-) {
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.widthIn(max = 840.dp),
-        )
-    }
 }

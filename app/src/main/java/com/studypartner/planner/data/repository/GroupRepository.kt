@@ -1,5 +1,6 @@
 package com.studypartner.planner.data.repository
 
+import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -7,9 +8,13 @@ import com.google.firebase.firestore.SetOptions
 import com.google.firebase.functions.FirebaseFunctions
 import com.studypartner.planner.data.model.Group
 import com.studypartner.planner.data.model.User
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
 import java.util.UUID
@@ -21,19 +26,32 @@ import kotlin.random.Random
 class GroupRepository @Inject constructor(
     private val firestore: FirebaseFirestore,
     private val auth: FirebaseAuth,
-    private val functions: FirebaseFunctions
+    private val functions: FirebaseFunctions,
+    private val userPreferencesRepository: UserPreferencesRepository
 ) {
+    private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _currentGroupId = MutableStateFlow<String?>(null)
     val currentGroupId: StateFlow<String?> = _currentGroupId
 
-    fun setCurrentGroupId(groupId: String) {
+    init {
+        repositoryScope.launch {
+            userPreferencesRepository.currentGroupIdFlow.collect { savedGroupId ->
+                _currentGroupId.value = savedGroupId
+            }
+        }
+    }
+
+    fun setCurrentGroupId(groupId: String?) {
         _currentGroupId.value = groupId
+        repositoryScope.launch {
+            userPreferencesRepository.updateCurrentGroupId(groupId)
+        }
     }
 
     suspend fun createUserIfNotExists() {
         val user = auth.currentUser ?: return
         try {
-            withTimeout(5000L) {
+            withTimeout(DEFAULT_TIMEOUT_MS) {
                 val userRef = firestore.collection("users").document(user.uid)
                 val newUser = mapOf(
                     "uid" to user.uid,
@@ -50,7 +68,7 @@ class GroupRepository @Inject constructor(
 
     suspend fun createGroup(name: String): Result<Group> {
         return try {
-            val user = auth.currentUser ?: throw Exception("Not signed in")
+            val user = auth.currentUser ?: error("Not signed in")
             val groupId = UUID.randomUUID().toString()
             val inviteCode = generateInviteCode()
 
@@ -62,7 +80,7 @@ class GroupRepository @Inject constructor(
                 createdBy = user.uid
             )
 
-            withTimeout(8000L) {
+            withTimeout(QUERY_TIMEOUT_MS) {
                 val batch = firestore.batch()
                 val groupRef = firestore.collection("groups").document(groupId)
                 val userRef = firestore.collection("users").document(user.uid)
@@ -82,9 +100,10 @@ class GroupRepository @Inject constructor(
             }
 
             _currentGroupId.value = groupId
+            userPreferencesRepository.updateCurrentGroupId(groupId)
             Result.success(group)
         } catch (e: TimeoutCancellationException) {
-            Result.failure(Exception("Group creation timed out. Please check your network connection."))
+            Result.failure(Exception("Group creation timed out. Please check your network connection.", e))
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -96,17 +115,10 @@ class GroupRepository @Inject constructor(
             return Result.failure(Exception("Invite code cannot be empty"))
         }
 
-        // Fast path: Try direct Firestore join first (atomic, batch, works offline / fast)
-        val directResult = directJoinGroupByCode(cleanCode)
-        if (directResult.isSuccess) {
-            return directResult
-        }
-
-        // Secondary fallback to Cloud Functions if direct join failed
         return try {
-            val user = auth.currentUser ?: throw Exception("Not signed in")
+            val user = auth.currentUser ?: error("Not signed in")
 
-            val result = withTimeout(6000L) {
+            val result = withTimeout(CALLABLE_TIMEOUT_MS) {
                 functions
                     .getHttpsCallable("joinGroup")
                     .call(mapOf("inviteCode" to cleanCode))
@@ -131,62 +143,13 @@ class GroupRepository @Inject constructor(
                     createdBy = createdBy
                 )
                 _currentGroupId.value = groupId
+                userPreferencesRepository.updateCurrentGroupId(groupId)
                 Result.success(group)
             } else {
-                directResult
+                Result.failure(Exception("Failed to parse joined group details from response"))
             }
-        } catch (e: Exception) {
-            directResult
-        }
-    }
-
-    private suspend fun directJoinGroupByCode(inviteCode: String): Result<Group> {
-        return try {
-            val user = auth.currentUser ?: throw Exception("Not signed in")
-
-            val querySnapshot = withTimeout(8000L) {
-                firestore.collection("groups")
-                    .whereEqualTo("inviteCode", inviteCode)
-                    .get().await()
-            }
-
-            if (querySnapshot.isEmpty) {
-                return Result.failure(Exception("Group not found with code: $inviteCode"))
-            }
-
-            val groupDoc = querySnapshot.documents.first()
-            val group = groupDoc.toObject(Group::class.java) ?: throw Exception("Failed to parse group details")
-
-            val updatedMemberIds = if (group.memberIds.contains(user.uid)) {
-                group.memberIds
-            } else {
-                group.memberIds + user.uid
-            }
-
-            withTimeout(8000L) {
-                val batch = firestore.batch()
-                val groupRef = firestore.collection("groups").document(group.groupId)
-                val userRef = firestore.collection("users").document(user.uid)
-
-                batch.update(groupRef, "memberIds", FieldValue.arrayUnion(user.uid))
-
-                val userData = mapOf(
-                    "uid" to user.uid,
-                    "displayName" to (user.displayName ?: ""),
-                    "email" to (user.email ?: ""),
-                    "photoUrl" to (user.photoUrl?.toString() ?: ""),
-                    "groupIds" to FieldValue.arrayUnion(group.groupId)
-                )
-                batch.set(userRef, userData, SetOptions.merge())
-
-                batch.commit().await()
-            }
-
-            val updatedGroup = group.copy(memberIds = updatedMemberIds)
-            _currentGroupId.value = updatedGroup.groupId
-            Result.success(updatedGroup)
         } catch (e: TimeoutCancellationException) {
-            Result.failure(Exception("Joining group timed out. Please check your network connection."))
+            Result.failure(Exception("Joining group timed out. Please check your network connection.", e))
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -194,10 +157,10 @@ class GroupRepository @Inject constructor(
 
     suspend fun getUserGroups(): Result<List<Group>> {
         return try {
-            val user = auth.currentUser ?: throw Exception("Not signed in")
+            val user = auth.currentUser ?: error("Not signed in")
 
             // Query groups directly where user is a member (1 roundtrip)
-            val querySnapshot = withTimeout(8000L) {
+            val querySnapshot = withTimeout(QUERY_TIMEOUT_MS) {
                 firestore.collection("groups")
                     .whereArrayContains("memberIds", user.uid)
                     .get().await()
@@ -206,11 +169,11 @@ class GroupRepository @Inject constructor(
             val groups = querySnapshot.toObjects(Group::class.java)
             Result.success(groups)
         } catch (e: TimeoutCancellationException) {
-            Result.failure(Exception("Fetching groups timed out."))
+            Result.failure(Exception("Fetching groups timed out.", e))
         } catch (e: Exception) {
             // Fallback strategy if whereArrayContains is blocked by security rule
             try {
-                val user = auth.currentUser ?: throw Exception("Not signed in")
+                val user = auth.currentUser ?: error("Not signed in")
                 val userDoc = firestore.collection("users").document(user.uid).get().await()
                 val userModel = userDoc.toObject(User::class.java) ?: return Result.success(emptyList())
 
@@ -233,7 +196,7 @@ class GroupRepository @Inject constructor(
         val user = auth.currentUser ?: return
         val groupId = currentGroupId.value ?: return
         try {
-            withTimeout(5000L) {
+            withTimeout(DEFAULT_TIMEOUT_MS) {
                 val batch = firestore.batch()
                 val groupRef = firestore.collection("groups").document(groupId)
                 val userRef = firestore.collection("users").document(user.uid)
@@ -244,13 +207,21 @@ class GroupRepository @Inject constructor(
                 batch.commit().await()
             }
             _currentGroupId.value = null
+            userPreferencesRepository.updateCurrentGroupId(null)
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "Failed to leave group", e)
         }
     }
 
     private fun generateInviteCode(): String {
         val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
         return (1..6).map { chars[Random.nextInt(chars.length)] }.joinToString("")
+    }
+
+    companion object {
+        private const val TAG = "GroupRepository"
+        private const val DEFAULT_TIMEOUT_MS = 5000L
+        private const val QUERY_TIMEOUT_MS = 8000L
+        private const val CALLABLE_TIMEOUT_MS = 10000L
     }
 }

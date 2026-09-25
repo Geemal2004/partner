@@ -16,13 +16,13 @@ import androidx.compose.ui.Modifier
 import com.studypartner.planner.ui.auth.AuthViewModel
 import com.studypartner.planner.ui.components.AppNavigationSuiteScaffold
 import com.studypartner.planner.ui.group.GroupViewModel
+import com.studypartner.planner.ui.navigation.Calendar
+import com.studypartner.planner.ui.navigation.DeepLinkManager
+import com.studypartner.planner.ui.navigation.EventDetail
 import com.studypartner.planner.ui.navigation.GroupSetup
 import com.studypartner.planner.ui.navigation.JoinGroup
-import com.studypartner.planner.ui.navigation.EventDetail
-import com.studypartner.planner.ui.navigation.TaskDetail
 import com.studypartner.planner.ui.navigation.Login
-import com.studypartner.planner.ui.navigation.Calendar
-import com.studypartner.planner.ui.navigation.DeepLinkParser
+import com.studypartner.planner.ui.navigation.TaskDetail
 import com.studypartner.planner.ui.navigation.rememberAppNavigator
 import com.studypartner.planner.ui.theme.StudyPartnerTheme
 import dagger.hilt.android.AndroidEntryPoint
@@ -33,14 +33,14 @@ class MainActivity : ComponentActivity() {
     private val authViewModel: AuthViewModel by viewModels()
     private val groupViewModel: GroupViewModel by viewModels()
 
-    private var pendingInviteCode: String? = null
-    private var pendingEventId: String? = null
-    private var pendingTaskId: String? = null
+    internal val deepLinkManager = DeepLinkManager()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        handleIntent(intent)
+
+        deepLinkManager.restoreInstanceState(savedInstanceState)
+        deepLinkManager.handleIntent(intent)
 
         setContent {
             StudyPartnerTheme {
@@ -51,6 +51,8 @@ class MainActivity : ComponentActivity() {
                     val navigator = rememberAppNavigator()
                     val currentUser by authViewModel.currentUser.collectAsState()
                     val groups by groupViewModel.groups.collectAsState()
+                    val hasLoadedGroups by groupViewModel.hasLoadedGroups.collectAsState()
+                    val pendingRoute by deepLinkManager.pendingRoute.collectAsState()
 
                     LaunchedEffect(currentUser) {
                         if (currentUser == null) {
@@ -61,26 +63,32 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    LaunchedEffect(currentUser, groups) {
+                    LaunchedEffect(currentUser, pendingRoute, groups, hasLoadedGroups) {
                         if (currentUser != null) {
-                            if (pendingInviteCode != null) {
-                                val code = pendingInviteCode!!
-                                pendingInviteCode = null
-                                navigator.navigate(JoinGroup(code))
-                            } else if (pendingEventId != null) {
-                                val eventId = pendingEventId!!
-                                pendingEventId = null
-                                navigator.navigate(EventDetail(eventId))
-                            } else if (pendingTaskId != null) {
-                                val taskId = pendingTaskId!!
-                                pendingTaskId = null
-                                navigator.navigate(TaskDetail(taskId))
-                            } else if (groups.isNotEmpty()) {
-                                if (navigator.currentDestination == Login || navigator.currentDestination == GroupSetup) {
-                                    navigator.resetTo(Calendar)
+                            // 1. Consume pending deep link first
+                            val routeToNavigate = deepLinkManager.consumePendingRoute()
+                            if (routeToNavigate != null) {
+                                navigator.navigate(routeToNavigate)
+                                return@LaunchedEffect
+                            }
+
+                            // 2. Normal destination routing once groups have loaded
+                            if (hasLoadedGroups) {
+                                val current = navigator.currentDestination
+                                if (groups.isNotEmpty()) {
+                                    if (current == Login || current == GroupSetup) {
+                                        navigator.resetTo(Calendar)
+                                    }
+                                } else {
+                                    val isDeepLinkedOrSafe = current == GroupSetup ||
+                                        current == Login ||
+                                        current is JoinGroup ||
+                                        current is EventDetail ||
+                                        current is TaskDetail
+                                    if (!isDeepLinkedOrSafe) {
+                                        navigator.resetTo(GroupSetup)
+                                    }
                                 }
-                            } else if (groups.isEmpty() && navigator.currentDestination != GroupSetup && navigator.currentDestination != Login && navigator.currentDestination !is JoinGroup) {
-                                navigator.resetTo(GroupSetup)
                             }
                         }
                     }
@@ -91,20 +99,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        handleIntent(intent)
+    public override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        deepLinkManager.saveInstanceState(outState)
     }
 
-    private fun handleIntent(intent: Intent) {
-        if (intent.action == Intent.ACTION_VIEW) {
-            val dataString = intent.dataString ?: intent.data?.toString()
-            when (val route = DeepLinkParser.parse(dataString)) {
-                is JoinGroup -> pendingInviteCode = route.code
-                is EventDetail -> pendingEventId = route.id
-                is TaskDetail -> pendingTaskId = route.id
-                else -> {}
-            }
-        }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        deepLinkManager.handleIntent(intent)
     }
 }

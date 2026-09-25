@@ -14,11 +14,14 @@ import com.studypartner.planner.MainActivity
 import com.studypartner.planner.R
 import com.studypartner.planner.data.local.EventDao
 import com.studypartner.planner.data.local.TaskDao
+import com.studypartner.planner.data.local.TaskEntity
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.util.Calendar
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.ZoneId
 
 @HiltWorker
 class DailySummaryWorker @AssistedInject constructor(
@@ -29,33 +32,24 @@ class DailySummaryWorker @AssistedInject constructor(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        val now = Calendar.getInstance()
-        val startOfDay = now.apply {
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }.timeInMillis
-
-        val endOfDay = now.apply {
-            set(Calendar.HOUR_OF_DAY, 23)
-            set(Calendar.MINUTE, 59)
-            set(Calendar.SECOND, 59)
-            set(Calendar.MILLISECOND, 999)
-        }.timeInMillis
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val startOfDay = today.atStartOfDay(zone).toInstant().toEpochMilli()
+        val endOfDay = today.atTime(LocalTime.MAX).atZone(zone).toInstant().toEpochMilli()
 
         val todaysEvents = eventDao.getEventsForDay(startOfDay, endOfDay)
-        val openTasks = taskDao.getOpenOrOverdueTasks(endOfDay)
+        val dueTasks = taskDao.getDueOrOverdueTasks(endOfDay)
+        val recentUndatedTasks = taskDao.getRecentUndatedTasks(limit = 3)
 
-        if (todaysEvents.isEmpty() && openTasks.isEmpty()) {
+        if (todaysEvents.isEmpty() && dueTasks.isEmpty() && recentUndatedTasks.isEmpty()) {
             return@withContext Result.success()
         }
 
-        sendNotification(todaysEvents.size, openTasks.size)
+        sendNotification(todaysEvents.size, dueTasks.size, recentUndatedTasks)
         Result.success()
     }
 
-    private fun sendNotification(eventsCount: Int, tasksCount: Int) {
+    private fun sendNotification(eventsCount: Int, dueTasksCount: Int, undatedTasks: List<TaskEntity>) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channelId = "daily_summary"
         
@@ -67,11 +61,15 @@ class DailySummaryWorker @AssistedInject constructor(
             )
             notificationManager.createNotificationChannel(channel)
         }
-
         val inboxStyle = NotificationCompat.InboxStyle()
-            .setBigContentTitle(DailySummaryBuilder.buildSummaryTitle(eventsCount, tasksCount))
+            .setBigContentTitle(DailySummaryBuilder.buildSummaryTitle(eventsCount, dueTasksCount, undatedTasks.size))
 
-        val lines = DailySummaryBuilder.buildSummaryLines(eventsCount, tasksCount)
+        val lines = DailySummaryBuilder.buildSummaryLines(
+            eventsCount = eventsCount,
+            tasksCount = dueTasksCount,
+            undatedTasksCount = undatedTasks.size,
+            undatedTaskTitles = undatedTasks.map { it.title }
+        )
         for (line in lines) {
             inboxStyle.addLine(line)
         }
@@ -96,6 +94,10 @@ class DailySummaryWorker @AssistedInject constructor(
             .setAutoCancel(true)
             .build()
 
-        notificationManager.notify(1001, notification)
+        notificationManager.notify(DAILY_SUMMARY_NOTIFICATION_ID, notification)
+    }
+
+    companion object {
+        private const val DAILY_SUMMARY_NOTIFICATION_ID = 1001
     }
 }

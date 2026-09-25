@@ -79,18 +79,52 @@ To fix `DEVELOPER_ERROR` (Status Code 10):
    rules_version = '2';
    service cloud.firestore {
      match /databases/{database}/documents {
-       match /users/{userId} {
-         allow read, write: if request.auth != null && request.auth.uid == userId;
+
+       function isAuthenticated() {
+         return request.auth != null;
        }
+
+       function isUser(uid) {
+         return isAuthenticated() && request.auth.uid == uid;
+       }
+
+       function isGroupMember(groupId) {
+         return isAuthenticated() &&
+           request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
+       }
+
+       function isValidGroupCreate(groupId) {
+         let data = request.resource.data;
+         let requiredFields = ['groupId', 'name', 'memberIds', 'inviteCode', 'createdBy', 'createdAt'];
+         return isAuthenticated() &&
+           data.keys().hasOnly(requiredFields) &&
+           data.keys().hasAll(requiredFields) &&
+           data.groupId == groupId &&
+           data.name is string && data.name.size() > 0 &&
+           data.inviteCode is string && data.inviteCode.size() == 6 &&
+           data.createdBy == request.auth.uid &&
+           data.memberIds == [request.auth.uid];
+       }
+
+       // users/{uid}
+       match /users/{uid} {
+         allow read, write: if isUser(uid);
+       }
+
+       // groups/{groupId}
        match /groups/{groupId} {
-         allow read, write: if request.auth != null && request.auth.uid in resource.data.memberIds;
-         allow create: if request.auth != null;
-         
+         allow create: if isValidGroupCreate(groupId);
+         allow read, update: if isAuthenticated() && request.auth.uid in resource.data.memberIds;
+         allow delete: if isAuthenticated() && resource.data.createdBy == request.auth.uid;
+
+         // Events subcollection
          match /events/{eventId} {
-           allow read, write: if request.auth != null;
+           allow read, write: if isGroupMember(groupId);
          }
+
+         // Tasks subcollection
          match /tasks/{taskId} {
-           allow read, write: if request.auth != null;
+           allow read, write: if isGroupMember(groupId);
          }
        }
      }
@@ -98,10 +132,7 @@ To fix `DEVELOPER_ERROR` (Status Code 10):
    ```
 
 4. **Firestore Indexes**:
-   Composite indexes are defined for:
-   - Collection `groups`: `inviteCode` (ASC)
-   - Collection `events`: `groupId` (ASC), `startTime` (ASC)
-   - Collection `tasks`: `groupId` (ASC), `dueDate` (ASC)
+   Standard subcollection queries are indexed automatically via single-field indexes. Composite indexes (if needed) are configured in `firestore.indexes.json`.
 
 5. **Cloud Functions Deployment**:
    If using server-side group join validation, deploy the Cloud Functions from the `functions/` directory:
@@ -122,9 +153,21 @@ Assemble the debug APK:
 ```
 
 ### Run Unit Tests
-Run all local JVM unit tests (including `ReminderTimeCalculatorTest`, `DailySummaryBuilderTest`, `DeepLinkParserTest`, `NavDestinationsTest`, and `TasksViewModelTest`):
+Run all local JVM unit tests (including `ReminderTimeCalculatorTest`, `DailySummaryBuilderTest`, `DeepLinkParserTest`, `NavDestinationsTest`, `TasksViewModelTest`, `CalendarViewModelTest`, `EventRepositoryTest`, `TaskRepositoryTest`, `GroupRepositoryTest`, and `BootReceiverTest`):
 ```bash
 ./gradlew test
+```
+
+### Static Analysis (Detekt)
+Run Detekt code quality and style checks:
+```bash
+./gradlew detekt
+```
+
+### Run Firebase Security Rules & Sync Emulator Tests
+Verify Firestore security rules and multi-client real-time sync against the Firebase Local Emulator Suite:
+```bash
+npx firebase-tools emulators:exec --only firestore "npm --prefix functions test"
 ```
 
 ### Run Instrumented & UI Tests
@@ -132,3 +175,13 @@ Run Room DAO and Compose UI tests on an attached emulator or connected device:
 ```bash
 ./gradlew connectedDebugAndroidTest
 ```
+
+---
+
+## Architectural Highlights
+
+- **Group Invite Security**: Joining groups via 6-character invite code is resolved securely through the `joinGroup` callable Cloud Function with atomic transaction validation. Clients never execute collection-wide queries across group records.
+- **Real-Time Synchronization & Clean Teardown**: `EventRepository` and `TaskRepository` implement `startRealtimeSync()` using Kotlin coroutine `callbackFlow`. Firestore snapshot listener registrations are guaranteed to unregister on scope cancellation (`awaitClose { listener.remove() }`), preventing memory and background network leaks.
+- **Active State Persistence**: The user's active group selection (`currentGroupId`) is persistently stored in Jetpack DataStore Preferences via `UserPreferencesRepository`. Navigation 3 active top-level destination (`selectedTopLevel`) is saved via `rememberSaveable` with `TopLevelNavKeySaver`, ensuring immediate state restoration across configuration changes and process recreation.
+- **Exact-Alarm Fallback**: On Android 12+ (API 31+), if exact alarm scheduling is not granted, `ReminderScheduler` gracefully falls back to `setAndAllowWhileIdle()` to ensure reminders are never lost. `SettingsScreen` actively surfaces this degradation with an actionable rationale card and direct intent link to system settings.
+

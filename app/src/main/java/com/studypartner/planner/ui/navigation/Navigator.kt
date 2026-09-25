@@ -9,6 +9,31 @@ import androidx.navigation3.runtime.NavBackStack
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.rememberNavBackStack
 
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
+
+val TopLevelNavKeySaver = Saver<MutableState<NavKey>, String>(
+    save = { state ->
+        when (state.value) {
+            Calendar -> "Calendar"
+            Tasks -> "Tasks"
+            Settings -> "Settings"
+            else -> "Calendar"
+        }
+    },
+    restore = { savedString ->
+        mutableStateOf(
+            when (savedString) {
+                "Calendar" -> Calendar
+                "Tasks" -> Tasks
+                "Settings" -> Settings
+                else -> Calendar
+            }
+        )
+    }
+)
+
 /**
  * Owns navigation state outside leaf composables.
  *
@@ -20,12 +45,25 @@ class AppNavigator(
     private val calendarStack: NavBackStack<NavKey>,
     private val tasksStack: NavBackStack<NavKey>,
     private val settingsStack: NavBackStack<NavKey>,
-    initialTopLevel: NavKey = Calendar,
+    private val selectedTopLevelState: MutableState<NavKey> = mutableStateOf(Calendar)
 ) {
-    var selectedTopLevel: NavKey by mutableStateOf(
-        if (initialTopLevel in TopLevelRoutes) initialTopLevel else Calendar
+    constructor(
+        calendarStack: NavBackStack<NavKey>,
+        tasksStack: NavBackStack<NavKey>,
+        settingsStack: NavBackStack<NavKey>,
+        initialTopLevel: NavKey
+    ) : this(
+        calendarStack = calendarStack,
+        tasksStack = tasksStack,
+        settingsStack = settingsStack,
+        selectedTopLevelState = mutableStateOf(if (initialTopLevel in TopLevelRoutes) initialTopLevel else Calendar)
     )
-        private set
+
+    var selectedTopLevel: NavKey
+        get() = selectedTopLevelState.value
+        private set(value) {
+            selectedTopLevelState.value = value
+        }
 
     val activeBackStack: NavBackStack<NavKey>
         get() = stackFor(selectedTopLevel)
@@ -92,12 +130,15 @@ fun rememberAppNavigator(
     val calendarStack = rememberNavBackStack(Calendar)
     val tasksStack = rememberNavBackStack(Tasks)
     val settingsStack = rememberNavBackStack(Settings)
-    return remember(calendarStack, tasksStack, settingsStack, startDestination) {
+    val selectedTopLevelState = rememberSaveable(saver = TopLevelNavKeySaver) {
+        mutableStateOf(if (startDestination in TopLevelRoutes) startDestination else Calendar)
+    }
+    return remember(calendarStack, tasksStack, settingsStack, selectedTopLevelState) {
         AppNavigator(
             calendarStack = calendarStack,
             tasksStack = tasksStack,
             settingsStack = settingsStack,
-            initialTopLevel = startDestination,
+            selectedTopLevelState = selectedTopLevelState,
         )
     }
 }

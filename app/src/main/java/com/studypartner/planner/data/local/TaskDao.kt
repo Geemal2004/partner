@@ -25,4 +25,10 @@ interface TaskDao {
 
     @Query("SELECT * FROM tasks WHERE isDone = 0 AND (dueDate <= :endOfDay OR dueDate IS NULL) ORDER BY dueDate ASC")
     suspend fun getOpenOrOverdueTasks(endOfDay: Long): List<TaskEntity>
+
+    @Query("SELECT * FROM tasks WHERE isDone = 0 AND dueDate IS NOT NULL AND dueDate <= :endOfDay ORDER BY dueDate ASC")
+    suspend fun getDueOrOverdueTasks(endOfDay: Long): List<TaskEntity>
+
+    @Query("SELECT * FROM tasks WHERE isDone = 0 AND dueDate IS NULL ORDER BY updatedAt DESC LIMIT :limit")
+    suspend fun getRecentUndatedTasks(limit: Int = 3): List<TaskEntity>
 }

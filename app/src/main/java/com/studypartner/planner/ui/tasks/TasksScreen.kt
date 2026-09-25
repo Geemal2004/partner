@@ -17,7 +17,10 @@ import androidx.compose.material3.adaptive.navigation.rememberListDetailPaneScaf
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -26,12 +29,29 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3AdaptiveApi::class)
 @Composable
-fun TasksScreen(viewModel: TasksViewModel = hiltViewModel()) {
+fun TasksScreen(
+    initialTaskId: String? = null,
+    viewModel: TasksViewModel = hiltViewModel()
+) {
     val tasks by viewModel.filteredTasks.collectAsState()
     val filter by viewModel.filter.collectAsState()
+    val currentUser by viewModel.currentUser.collectAsState()
+    val syncError by viewModel.syncError.collectAsState()
 
     val navigator = rememberListDetailPaneScaffoldNavigator<String>()
     val coroutineScope = rememberCoroutineScope()
+
+    BackHandler(enabled = navigator.canNavigateBack()) {
+        coroutineScope.launch {
+            navigator.navigateBack()
+        }
+    }
+
+    LaunchedEffect(initialTaskId) {
+        if (initialTaskId != null) {
+            navigator.navigateTo(ListDetailPaneScaffoldRole.Detail, initialTaskId)
+        }
+    }
 
     ListDetailPaneScaffold(
         directive = navigator.scaffoldDirective,
@@ -42,6 +62,8 @@ fun TasksScreen(viewModel: TasksViewModel = hiltViewModel()) {
                     tasks = tasks,
                     currentFilter = filter,
                     onFilterChange = viewModel::setFilter,
+                    syncError = syncError,
+                    onRetrySync = viewModel::retrySync,
                     onTaskClick = { taskId ->
                         coroutineScope.launch {
                             navigator.navigateTo(ListDetailPaneScaffoldRole.Detail, taskId)
@@ -60,7 +82,7 @@ fun TasksScreen(viewModel: TasksViewModel = hiltViewModel()) {
         detailPane = {
             AnimatedPane {
                 val selectedId = navigator.currentDestination?.contentKey
-                val currentUserUid = viewModel.currentUser?.uid
+                val currentUserUid = currentUser?.uid
                 if (selectedId != null) {
                     val task = tasks.find { it.id == selectedId }
                     TaskEditorPane(
@@ -94,6 +116,8 @@ fun TaskListPane(
     tasks: List<TaskDto>,
     currentFilter: TaskFilter,
     onFilterChange: (TaskFilter) -> Unit,
+    syncError: String?,
+    onRetrySync: () -> Unit,
     onTaskClick: (String) -> Unit,
     onTaskCheck: (TaskDto) -> Unit,
     onTaskDelete: (TaskDto) -> Unit,
@@ -107,6 +131,36 @@ fun TaskListPane(
         }
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+            if (syncError != null) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Sync Error",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Text(
+                                syncError,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                        TextButton(onClick = onRetrySync) {
+                            Text("Retry", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+
             ScrollableTabRow(
                 selectedTabIndex = currentFilter.ordinal,
                 edgePadding = 16.dp
@@ -180,7 +234,7 @@ fun TaskListItem(
             ) {
                 Icon(
                     Icons.Rounded.Delete,
-                    contentDescription = "Delete",
+                    contentDescription = "Delete ${task.title}",
                     tint = MaterialTheme.colorScheme.onErrorContainer,
                     modifier = Modifier.padding(end = 16.dp)
                 )
@@ -197,7 +251,14 @@ fun TaskListItem(
                 ) {
                     Checkbox(
                         checked = task.isDone,
-                        onCheckedChange = { onCheck() }
+                        onCheckedChange = { onCheck() },
+                        modifier = Modifier.semantics {
+                            contentDescription = if (task.isDone) {
+                                "Mark ${task.title} as incomplete"
+                            } else {
+                                "Mark ${task.title} as complete"
+                            }
+                        }
                     )
                     Spacer(modifier = Modifier.width(16.dp))
                     Column(modifier = Modifier.weight(1f)) {

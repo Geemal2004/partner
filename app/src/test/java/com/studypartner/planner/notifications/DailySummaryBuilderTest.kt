@@ -53,4 +53,39 @@ class DailySummaryBuilderTest {
         assertThat(text).contains("You have 1 event(s) today.")
         assertThat(text).contains("You have 2 open task(s).")
     }
+
+    @Test
+    fun buildSummaryLines_withUndatedTasks_includesOngoingTasksSection() {
+        val lines = DailySummaryBuilder.buildSummaryLines(
+            eventsCount = 1,
+            tasksCount = 2,
+            undatedTasksCount = 2,
+            undatedTaskTitles = listOf("Read paper", "Draft outline")
+        )
+
+        assertThat(lines).hasSize(3)
+        assertThat(lines[0]).isEqualTo("You have 1 event(s) today.")
+        assertThat(lines[1]).isEqualTo("You have 2 open task(s).")
+        assertThat(lines[2]).isEqualTo("Ongoing Tasks: Read paper, Draft outline")
+    }
+
+    @Test
+    fun buildSummaryLines_withMoreThanThreeUndatedTasks_truncatesWithMoreCount() {
+        val lines = DailySummaryBuilder.buildSummaryLines(
+            eventsCount = 0,
+            tasksCount = 0,
+            undatedTasksCount = 5,
+            undatedTaskTitles = listOf("Task 1", "Task 2", "Task 3", "Task 4", "Task 5")
+        )
+
+        assertThat(lines).hasSize(1)
+        assertThat(lines[0]).isEqualTo("Ongoing Tasks: Task 1, Task 2, Task 3 (+2 more)")
+    }
+
+    @Test
+    fun buildSummaryTitle_withUndatedTasks_includesTotalCount() {
+        val title = DailySummaryBuilder.buildSummaryTitle(eventsCount = 1, tasksCount = 2, undatedTasksCount = 3)
+        assertThat(title).contains("1 events")
+        assertThat(title).contains("5 tasks")
+    }
 }

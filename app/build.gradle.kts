@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.google.devtools.ksp)
     alias(libs.plugins.hilt)
     alias(libs.plugins.google.services)
+    alias(libs.plugins.detekt)
 }
 
 android {
@@ -45,6 +46,7 @@ android {
     }
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -131,3 +133,11 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
+
+detekt {
+    buildUponDefaultConfig = true
+    allRules = false
+    config.setFrom(files("$rootDir/config/detekt/detekt.yml"))
+    source.setFrom("src/main/java", "src/test/java")
+}
+

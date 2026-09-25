@@ -27,6 +27,9 @@ class GroupViewModel @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    private val _hasLoadedGroups = MutableStateFlow(false)
+    val hasLoadedGroups: StateFlow<Boolean> = _hasLoadedGroups.asStateFlow()
+
     fun fetchGroups() {
         viewModelScope.launch {
             _isLoading.value = true
@@ -42,6 +45,7 @@ class GroupViewModel @Inject constructor(
                 _error.value = result.exceptionOrNull()?.message ?: "Failed to fetch groups"
             }
             _isLoading.value = false
+            _hasLoadedGroups.value = true
         }
     }
 

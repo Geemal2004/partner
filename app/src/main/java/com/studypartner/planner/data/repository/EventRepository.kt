@@ -1,12 +1,17 @@
 package com.studypartner.planner.data.repository
 
+import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FirebaseFirestore
 import com.studypartner.planner.data.local.EventDao
 import com.studypartner.planner.data.local.EventEntity
 import com.studypartner.planner.data.model.EventDto
 import com.studypartner.planner.notifications.ReminderScheduler
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -22,30 +27,66 @@ class EventRepository @Inject constructor(
         return eventDao.getEventsForGroup(groupId)
     }
 
+    fun startRealtimeSync(groupId: String): Flow<List<EventEntity>> = callbackFlow {
+        if (groupId.isEmpty()) {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+
+        val registration = firestore.collection("groups").document(groupId)
+            .collection("events")
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    close(error)
+                    return@addSnapshotListener
+                }
+                if (snapshot != null) {
+                    launch(Dispatchers.IO) {
+                        try {
+                            val prefs = userPreferencesRepository.userPreferencesFlow.first()
+                            for (change in snapshot.documentChanges) {
+                                when (change.type) {
+                                    DocumentChange.Type.ADDED,
+                                    DocumentChange.Type.MODIFIED -> {
+                                        val dto = change.document.toObject(EventDto::class.java)
+                                        val entity = dto.toEntity()
+                                        eventDao.insertEvent(entity)
+                                        reminderScheduler.scheduleReminder(entity, prefs.defaultReminderOffset)
+                                    }
+                                    DocumentChange.Type.REMOVED -> {
+                                        eventDao.deleteEvent(change.document.id)
+                                        reminderScheduler.cancelReminder(change.document.id)
+                                    }
+                                }
+                            }
+                            val remoteEvents = snapshot.documents.mapNotNull { it.toObject(EventDto::class.java) }
+                            trySend(remoteEvents.map { it.toEntity() })
+                        } catch (e: Exception) {
+                            close(e)
+                        }
+                    }
+                }
+            }
+
+        awaitClose {
+            registration.remove()
+        }
+    }
+
     suspend fun syncEvents(groupId: String) {
         if (groupId.isEmpty()) return
-        try {
-            val snapshot = firestore.collection("groups").document(groupId)
-                .collection("events")
-                .get()
-                .await()
-            var remoteEvents = snapshot.documents.mapNotNull { it.toObject(EventDto::class.java) }
-            if (remoteEvents.isEmpty()) {
-                val rootSnapshot = firestore.collection("events")
-                    .whereEqualTo("groupId", groupId)
-                    .get()
-                    .await()
-                remoteEvents = rootSnapshot.toObjects(EventDto::class.java)
-            }
-            val entities = remoteEvents.map { it.toEntity() }
-            eventDao.insertEvents(entities)
+        val snapshot = firestore.collection("groups").document(groupId)
+            .collection("events")
+            .get()
+            .await()
+        val remoteEvents = snapshot.documents.mapNotNull { it.toObject(EventDto::class.java) }
+        val entities = remoteEvents.map { it.toEntity() }
+        eventDao.insertEvents(entities)
 
-            val prefs = userPreferencesRepository.userPreferencesFlow.first()
-            entities.forEach { event ->
-                reminderScheduler.scheduleReminder(event, prefs.defaultReminderOffset)
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        val prefs = userPreferencesRepository.userPreferencesFlow.first()
+        entities.forEach { event ->
+            reminderScheduler.scheduleReminder(event, prefs.defaultReminderOffset)
         }
     }
 
@@ -57,24 +98,12 @@ class EventRepository @Inject constructor(
         val prefs = userPreferencesRepository.userPreferencesFlow.first()
         reminderScheduler.scheduleReminder(updatedEvent, prefs.defaultReminderOffset)
 
-        // Then sync to Firestore
+        // Then sync to Firestore subcollection only
         if (updatedEvent.groupId.isNotEmpty()) {
-            try {
-                firestore.collection("groups").document(updatedEvent.groupId)
-                    .collection("events").document(updatedEvent.id)
-                    .set(updatedEvent.toDto())
-                    .await()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-            try {
-                firestore.collection("events")
-                    .document(updatedEvent.id)
-                    .set(updatedEvent.toDto())
-                    .await()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            firestore.collection("groups").document(updatedEvent.groupId)
+                .collection("events").document(updatedEvent.id)
+                .set(updatedEvent.toDto())
+                .await()
         }
     }
 
@@ -84,24 +113,12 @@ class EventRepository @Inject constructor(
         eventDao.deleteEvent(eventId)
         reminderScheduler.cancelReminder(eventId)
 
-        // Then delete from Firestore
+        // Then delete from Firestore subcollection only
         if (existingEvent != null && existingEvent.groupId.isNotEmpty()) {
-            try {
-                firestore.collection("groups").document(existingEvent.groupId)
-                    .collection("events").document(eventId)
-                    .delete()
-                    .await()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-        try {
-            firestore.collection("events")
-                .document(eventId)
+            firestore.collection("groups").document(existingEvent.groupId)
+                .collection("events").document(eventId)
                 .delete()
                 .await()
-        } catch (e: Exception) {
-            // Ignore if not in top level collection
         }
     }
 }

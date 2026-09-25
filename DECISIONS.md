@@ -37,7 +37,8 @@ Recorded during implementation so Navigation 3 / Adaptive / Firebase choices sta
 ## Data & Sync Architecture
 
 - **Room Database**: Local single source of truth (`StudyPartnerDatabase`) for `EventEntity` and `TaskEntity`.
-- **Firestore Synchronization**: Two-way sync via `EventRepository` and `TaskRepository` syncing local changes with Firebase Firestore collections (`groups/{groupId}/events`, `groups/{groupId}/tasks`).
+- **Firestore Synchronization**: Synchronizing local changes exclusively with Firebase Firestore subcollections (`groups/{groupId}/events`, `groups/{groupId}/tasks`). Root-level collections `/events` and `/tasks` removed to ensure single-path security rules and FCM triggering.
+- **Group Invite Code Lookup**: Routed through the secure callable Cloud Function (`joinGroup`) using Firebase Admin privileges. The client never queries across all groups, maintaining strict privacy where groups are readable only by their members.
 - **User Preferences**: Jetpack DataStore Preferences for daily summary time, reminder offsets, and partner update toggles.
 
 ## Notifications & Background Processing
@@ -48,6 +49,32 @@ Recorded during implementation so Navigation 3 / Adaptive / Firebase choices sta
 
 ## Testing Strategy
 
-- **Unit Tests**: JUnit 4, MockK, Truth, Turbine, and Coroutines Test (`TasksViewModelTest`, `ReminderTimeCalculatorTest`, `DailySummaryBuilderTest`, `DeepLinkParserTest`, `NavDestinationsTest`).
+- **Unit Tests**: JUnit 4, MockK, Truth, Turbine, and Coroutines Test (`TasksViewModelTest`, `ReminderTimeCalculatorTest`, `DailySummaryBuilderTest`, `DeepLinkParserTest`, `NavDestinationsTest`, `EventRepositoryTest`, `TaskRepositoryTest`, `GroupRepositoryTest`).
 - **Room DAO Tests**: Instrumented Android JUnit 4 tests using in-memory Room database (`EventDaoTest`, `TaskDaoTest`).
 - **Compose UI Tests**: Instrumented Compose testing rules verifying task filtering (`TasksScreenTest`) and event creation form inputs (`EventEditorScreenTest`).
+
+## Phase 3 — Architecture & Reliability Decisions (2026-09-25)
+
+- **Exact-Alarm Fallback & Notice**: On Android 12+ (API 31+), if exact alarm permission (`SCHEDULE_EXACT_ALARM`) is denied, `ReminderScheduler` falls back to `setAndAllowWhileIdle()`. `SettingsScreen` actively inspects `canScheduleExactAlarms()` and displays an actionable warning card directing the user to system settings so that reminder imprecision is not silent.
+- **Undated Task Daily Summary Policy (WM-04)**: Tasks without due dates (`dueDate == null`) are segregated from dated tasks due today. To prevent repetitive notification spam for stale backlog items, `DailySummaryWorker` queries up to 3 most recently updated undated tasks and formats them under a distinct "Ongoing Tasks" section with a preview of titles and a count of remaining items.
+- **WorkManager Date Calculation (WM-03)**: Replaced mutable single-instance `java.util.Calendar` usage in `DailySummaryWorker` with immutable `java.time.LocalDate` and `ZoneId.systemDefault()`, preventing date boundary corruption.
+- **Top-Level Tab State Persistence (NAV-01)**: `selectedTopLevel` in `AppNavigator` is persisted across process death using `rememberSaveable` with a dedicated `TopLevelNavKeySaver`, ensuring users return to their active tab upon process restoration.
+- **Group Selection Persistence (DATA-02)**: Active `currentGroupId` is backed by Jetpack DataStore Preferences via `UserPreferencesRepository`. Selection changes immediately persist to disk and restore asynchronously on app startup.
+- **Reactive Current User & Filter Integrity (CODE-01)**: `TasksViewModel` observes `AuthRepository.currentUser` as an active `StateFlow`, eliminating stale `auth.currentUser` references and updating `filteredTasks` dynamically across authentication lifecycle events.
+- **Sync Exception & Realtime Listener Propagation (CODE-02)**: Swallowed exceptions in `EventRepository` and `TaskRepository` were replaced with proper error propagation (`close(error)` on snapshot channels and rethrown exceptions on one-shot syncs). `CalendarViewModel` and `TasksViewModel` expose `syncError: StateFlow<String?>` surfaced to users via actionable Retry UI banners.
+- **Firestore Listener Teardown Verification**: Explicit unit tests in `EventRepositoryTest` and `TaskRepositoryTest` confirm that `ListenerRegistration.remove()` is called when the collecting coroutine scope is cancelled.
+
+## Phase 4 — Quality, Static Analysis & Accessibility (2026-09-25)
+
+- **Detekt Integration & Linter Configuration**: Integrated Detekt with custom configuration in `config/detekt/detekt.yml`. Configured Compose-aware rules: Composable annotations ignored for method length, parameter lists, and naming patterns; line length capped at 140; test packages excluded from generic exception throws; and matching declaration rules adjusted for multi-definition Compose files.
+- **Accessibility Hardening**:
+  - *Calendar & MonthView*: Day cells annotated with explicit semantics (`cellDescription`) announcing the full date (e.g. "Monday, September 28, 2026"), "Today" indicator, selection status, and exact event counts. Integrated back navigation icon into `EventDetailPane` `TopAppBar` with accessible descriptions.
+  - *Tasks*: Checkbox controls annotated with contextual toggle descriptions ("Mark {title} as complete/incomplete"). Swipe-to-dismiss delete action annotated with item-specific description ("Delete {title}").
+  - *Touch Targets & Font Scaling*: Preserved minimum 48dp touch targets across all interactive elements (`sizeIn(minWidth = 48.dp, minHeight = 48.dp)` and Material 3 component standards). Typography sizes use relative `sp` units within flexible scrollable containers.
+- **Idiomatic Kotlin & Error Hygiene**:
+  - Replaced `throw IllegalStateException(...)` with Kotlin standard `error(...)` throughout `GroupRepository`.
+  - Replaced swallowed timeout exceptions with chained exception propagation to preserve diagnostic context.
+  - Replaced `printStackTrace()` with structured `Log.e()` calls.
+  - Extracted `TopLevelDestination` enum into a separate source file (`TopLevelDestination.kt`).
+  - Extracted Google Play Services resolution helper in `AuthRepository` to reduce function complexity.
+

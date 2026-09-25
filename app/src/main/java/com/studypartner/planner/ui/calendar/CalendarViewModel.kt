@@ -11,6 +11,10 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
@@ -32,6 +36,28 @@ class CalendarViewModel @Inject constructor(
 
     val currentGroupId = groupRepository.currentGroupId
 
+    private val _retrySignal = MutableStateFlow(0)
+
+    private val _syncError = MutableStateFlow<String?>(null)
+    val syncError: StateFlow<String?> = _syncError
+
+    fun clearSyncError() {
+        _syncError.value = null
+    }
+
+    init {
+        viewModelScope.launch {
+            combine(currentGroupId, _retrySignal) { groupId, _ -> groupId }
+                .collectLatest { groupId ->
+                    if (!groupId.isNullOrEmpty()) {
+                        eventRepository.startRealtimeSync(groupId)
+                            .catch { e -> _syncError.value = e.localizedMessage ?: "Realtime sync error" }
+                            .collect()
+                    }
+                }
+        }
+    }
+
     val events: StateFlow<List<EventEntity>> = currentGroupId.flatMapLatest { groupId ->
         if (groupId == null) flowOf(emptyList())
         else eventRepository.getEvents(groupId)
@@ -47,20 +73,39 @@ class CalendarViewModel @Inject constructor(
 
     fun syncEvents() {
         viewModelScope.launch {
+            _syncError.value = null
             val groupId = currentGroupId.value ?: return@launch
-            eventRepository.syncEvents(groupId)
+            try {
+                eventRepository.syncEvents(groupId)
+            } catch (e: Exception) {
+                _syncError.value = e.localizedMessage ?: "Failed to sync events"
+            }
         }
+    }
+
+    fun retrySync() {
+        _syncError.value = null
+        _retrySignal.value++
+        syncEvents()
     }
 
     fun saveEvent(event: EventEntity) {
         viewModelScope.launch {
-            eventRepository.saveEvent(event)
+            try {
+                eventRepository.saveEvent(event)
+            } catch (e: Exception) {
+                _syncError.value = e.localizedMessage ?: "Failed to save event"
+            }
         }
     }
 
     fun deleteEvent(eventId: String) {
         viewModelScope.launch {
-            eventRepository.deleteEvent(eventId)
+            try {
+                eventRepository.deleteEvent(eventId)
+            } catch (e: Exception) {
+                _syncError.value = e.localizedMessage ?: "Failed to delete event"
+            }
         }
     }
     

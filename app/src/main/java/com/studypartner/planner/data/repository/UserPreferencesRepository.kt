@@ -23,6 +23,11 @@ class UserPreferencesRepository @Inject constructor(
         val DAILY_SUMMARY_TIME = stringPreferencesKey("daily_summary_time")
         val DEFAULT_REMINDER_OFFSET = intPreferencesKey("default_reminder_offset")
         val PARTNER_UPDATES_ENABLED = booleanPreferencesKey("partner_updates_enabled")
+        val CURRENT_GROUP_ID = stringPreferencesKey("current_group_id")
+    }
+
+    val currentGroupIdFlow: Flow<String?> = dataStore.data.map { preferences ->
+        preferences[CURRENT_GROUP_ID]
     }
 
     val userPreferencesFlow: Flow<UserPreferences> = dataStore.data.map { preferences ->
@@ -32,6 +37,16 @@ class UserPreferencesRepository @Inject constructor(
             defaultReminderOffset = preferences[DEFAULT_REMINDER_OFFSET] ?: 15,
             partnerUpdatesEnabled = preferences[PARTNER_UPDATES_ENABLED] ?: true
         )
+    }
+
+    suspend fun updateCurrentGroupId(groupId: String?) {
+        dataStore.edit { prefs ->
+            if (groupId != null) {
+                prefs[CURRENT_GROUP_ID] = groupId
+            } else {
+                prefs.remove(CURRENT_GROUP_ID)
+            }
+        }
     }
 
     suspend fun updateDailySummaryEnabled(enabled: Boolean) {

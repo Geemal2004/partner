@@ -29,16 +29,6 @@ import com.studypartner.planner.ui.navigation.Tasks
 import com.studypartner.planner.ui.navigation.rememberAppNavigator
 import com.studypartner.planner.ui.theme.StudyPartnerTheme
 
-enum class TopLevelDestination(
-    val route: NavKey,
-    val icon: ImageVector,
-    val labelRes: Int,
-) {
-    CALENDAR(Calendar, Icons.Rounded.CalendarMonth, R.string.nav_calendar),
-    TASKS(Tasks, Icons.Rounded.CheckCircle, R.string.nav_tasks),
-    SETTINGS(Settings, Icons.Rounded.Settings, R.string.nav_settings),
-}
-
 @Composable
 fun AppNavigationSuiteScaffold(
     navigator: AppNavigator,

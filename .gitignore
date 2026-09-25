@@ -1,12 +1,7 @@
 *.iml
 .gradle
 /local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
+.idea/
 .DS_Store
 /build
 /app/build
@@ -17,5 +12,10 @@ local.properties
 .kotlin/
 .agent/
 
-# Keep your Firebase config local if you prefer; CI can inject it.
-# app/google-services.json
+# Keep your Firebase config local; CI can inject it.
+app/google-services.json
+
+# Firebase local logs
+firestore-debug.log*
+firebase-debug.log*
+

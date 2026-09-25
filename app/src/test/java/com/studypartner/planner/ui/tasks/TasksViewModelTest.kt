@@ -31,6 +31,7 @@ class TasksViewModelTest {
     private val groupRepository: GroupRepository = mockk(relaxed = true)
 
     private val currentGroupIdFlow = MutableStateFlow<String?>("group-1")
+    private val currentUserFlow = MutableStateFlow<FirebaseUser?>(null)
     private val mockUser: FirebaseUser = mockk(relaxed = true)
 
     @Before
@@ -38,7 +39,9 @@ class TasksViewModelTest {
         Dispatchers.setMain(testDispatcher)
         every { groupRepository.currentGroupId } returns currentGroupIdFlow
         every { authRepository.getCurrentUserSync() } returns mockUser
+        every { authRepository.currentUser } returns currentUserFlow
         every { mockUser.uid } returns "user-me"
+        currentUserFlow.value = mockUser
 
         val sampleTasks = listOf(
             TaskDto(
@@ -80,6 +83,7 @@ class TasksViewModelTest {
         )
 
         every { taskRepository.getTasks("group-1") } returns flowOf(sampleTasks)
+        every { taskRepository.startRealtimeSync(any()) } returns flowOf(emptyList())
     }
 
     @After
@@ -149,5 +153,70 @@ class TasksViewModelTest {
 
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    @Test
+    fun filteredTasks_reactsToCurrentUserChange() = runTest {
+        val viewModel = TasksViewModel(taskRepository, authRepository, groupRepository)
+        viewModel.setFilter(TaskFilter.MINE)
+
+        viewModel.filteredTasks.test {
+            assertThat(awaitItem()).isEmpty()
+            val initialFiltered = awaitItem()
+            // With user-me, task 1 is mine
+            assertThat(initialFiltered.map { it.id }).containsExactly("1")
+
+            // Now current user switches to user-partner
+            val partnerUser: FirebaseUser = mockk(relaxed = true)
+            every { partnerUser.uid } returns "user-partner"
+            every { authRepository.getCurrentUserSync() } returns partnerUser
+            currentUserFlow.value = partnerUser
+
+            val updatedFiltered = awaitItem()
+            // With user-partner, task 2 is mine
+            assertThat(updatedFiltered.map { it.id }).containsExactly("2")
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun realtimeSync_whenErrorOccurs_setsSyncErrorWithoutCrashing() = runTest {
+        val errorFlow = kotlinx.coroutines.flow.flow<List<TaskDto>> {
+            throw RuntimeException("Firestore task stream disconnected")
+        }
+        every { taskRepository.startRealtimeSync("group-1") } returns errorFlow
+
+        val viewModel = TasksViewModel(taskRepository, authRepository, groupRepository)
+        testScheduler.advanceUntilIdle()
+
+        assertThat(viewModel.syncError.value).contains("Firestore task stream disconnected")
+
+        // ViewModel scope is not dead, filter update works
+        viewModel.setFilter(TaskFilter.COMPLETED)
+        assertThat(viewModel.filter.value).isEqualTo(TaskFilter.COMPLETED)
+    }
+
+    @Test
+    fun retrySync_clearsSyncErrorAndRestartsSync() = runTest {
+        val errorFlow = kotlinx.coroutines.flow.flow<List<TaskDto>> {
+            throw RuntimeException("Network error")
+        }
+        every { taskRepository.startRealtimeSync("group-1") } returns errorFlow
+
+        val viewModel = TasksViewModel(taskRepository, authRepository, groupRepository)
+        testScheduler.advanceUntilIdle()
+
+        assertThat(viewModel.syncError.value).isNotNull()
+
+        // Now network recovers
+        every { taskRepository.startRealtimeSync("group-1") } returns flowOf(emptyList())
+
+        viewModel.retrySync()
+        testScheduler.advanceUntilIdle()
+
+        assertThat(viewModel.syncError.value).isNull()
+        io.mockk.verify(atLeast = 2) { taskRepository.startRealtimeSync("group-1") }
+        io.mockk.coVerify(atLeast = 1) { taskRepository.syncTasks("group-1") }
     }
 }

@@ -38,6 +38,7 @@ class AuthRepository @Inject constructor(
 ) {
     companion object {
         private const val TAG = "AuthRepository"
+        private const val PLAY_SERVICES_RESOLUTION_REQUEST_CODE = 9000
     }
 
     val currentUser: Flow<FirebaseUser?> = callbackFlow {
@@ -50,32 +51,46 @@ class AuthRepository @Inject constructor(
 
     fun getCurrentUserSync(): FirebaseUser? = firebaseAuth.currentUser
 
-    suspend fun signInWithGoogle(activity: Activity): Result<FirebaseUser> {
-        // 1. Check Google Play Services availability and offer resolution if needed
+    private fun checkPlayServicesAvailability(activity: Activity): Result<Unit>? {
         val googleApiAvailability = GoogleApiAvailability.getInstance()
         val playServicesStatus = googleApiAvailability.isGooglePlayServicesAvailable(activity)
-        if (playServicesStatus != ConnectionResult.SUCCESS) {
-            if (googleApiAvailability.isUserResolvableError(playServicesStatus)) {
-                try {
-                    googleApiAvailability.getErrorDialog(activity, playServicesStatus, 9000)?.show()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error displaying Google Play Services resolution dialog", e)
-                }
-                val errorString = googleApiAvailability.getErrorString(playServicesStatus)
-                val msg = "Google Play Services update or initialization required ($errorString). Please update or initialize Google Play Services on your device."
-                Log.e(TAG, "Sign in failed: $msg")
-                return Result.failure(Exception(msg))
-            } else {
-                val msg = "Google Play Services is not supported or unavailable on this device."
-                Log.e(TAG, "Sign in failed: $msg")
-                return Result.failure(Exception(msg))
+        if (playServicesStatus == ConnectionResult.SUCCESS) return null
+
+        return if (googleApiAvailability.isUserResolvableError(playServicesStatus)) {
+            try {
+                googleApiAvailability.getErrorDialog(
+                    activity,
+                    playServicesStatus,
+                    PLAY_SERVICES_RESOLUTION_REQUEST_CODE
+                )?.show()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error displaying Google Play Services resolution dialog", e)
             }
+            val errorString = googleApiAvailability.getErrorString(playServicesStatus)
+            val msg = "Google Play Services update or initialization required ($errorString). " +
+                "Please update or initialize Google Play Services on your device."
+            Log.e(TAG, "Sign in failed: $msg")
+            Result.failure(Exception(msg))
+        } else {
+            val msg = "Google Play Services is not supported or unavailable on this device."
+            Log.e(TAG, "Sign in failed: $msg")
+            Result.failure(Exception(msg))
+        }
+    }
+
+    suspend fun signInWithGoogle(activity: Activity): Result<FirebaseUser> {
+        // 1. Check Google Play Services availability and offer resolution if needed
+        val playServicesError = checkPlayServicesAvailability(activity)
+        if (playServicesError != null) {
+            @Suppress("UNCHECKED_CAST")
+            return playServicesError as Result<FirebaseUser>
         }
 
         // 2. Retrieve webClientId safely
         val webClientId = try {
             context.getString(R.string.default_web_client_id)
         } catch (e: Exception) {
+            Log.w(TAG, "Resource default_web_client_id not found", e)
             ""
         }
         if (webClientId.isBlank()) {
@@ -105,11 +120,13 @@ class AuthRepository @Inject constructor(
             Result.failure(Exception("Sign in was canceled.", e))
         } catch (e: GetCredentialProviderConfigurationException) {
             Log.e(TAG, "Sign in failed", e)
-            val userMsg = "Google Play Services or Credential Provider configuration error. Please update Google Play Services or check app setup."
+            val userMsg = "Google Play Services or Credential Provider configuration error. " +
+                "Please update Google Play Services or check app setup."
             Result.failure(Exception(userMsg, e))
         } catch (e: NoCredentialException) {
             Log.e(TAG, "Sign in failed", e)
-            val userMsg = "No Google accounts found on this device or available for sign-in. Please add a Google account in device Settings and try again."
+            val userMsg = "No Google accounts found on this device or available for sign-in. " +
+                "Please add a Google account in device Settings and try again."
             Result.failure(Exception(userMsg, e))
         } catch (e: GetCredentialCustomException) {
             Log.e(TAG, "Sign in failed", e)
@@ -167,16 +184,19 @@ class AuthRepository @Inject constructor(
             e is NoCredentialException ||
             combined.contains("NoCredentialException", ignoreCase = true) ||
             combined.contains("no credentials available", ignoreCase = true) -> {
-                "No Google accounts found on this device or available for sign-in. Please add a Google account in device Settings and try again."
+                "No Google accounts found on this device or available for sign-in. " +
+                "Please add a Google account in device Settings and try again."
             }
             e is GetCredentialProviderConfigurationException ||
             combined.contains("GetCredentialProviderConfigurationException", ignoreCase = true) -> {
-                "Google Play Services or Credential Provider configuration error. Please update Google Play Services or check app setup."
+                "Google Play Services or Credential Provider configuration error. " +
+                "Please update Google Play Services or check app setup."
             }
             combined.contains("10") ||
             combined.contains("DEVELOPER_ERROR", ignoreCase = true) -> {
                 "Google Sign-In configuration error (DEVELOPER_ERROR / Code 10). " +
-                "Please verify that your SHA-1 fingerprint is registered in Firebase Console for package 'com.studypartner.planner' and default_web_client_id is correct."
+                "Please verify that your SHA-1 fingerprint is registered in Firebase Console " +
+                "for package 'com.studypartner.planner' and default_web_client_id is correct."
             }
             combined.contains("7") ||
             combined.contains("NETWORK_ERROR", ignoreCase = true) -> {
